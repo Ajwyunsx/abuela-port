@@ -49,13 +49,20 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android build-tools
+      - name: Locate the Android SDK
         run: |
-          sdkmanager --install "build-tools;34.0.0" "platforms;android-34" > /dev/null
-          echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_ENV"
+          set -e
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK/build-tools" ]; then
+            echo "::error::no Android SDK build-tools found under $SDK"
+            exit 1
+          fi
+          # newest installed build-tools, which carries apksigner
+          BT="$(ls -d "$SDK"/build-tools/*/ | sort -V | tail -1)"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_BUILD_TOOLS=${BT%/}" >> "$GITHUB_ENV"
+          echo "using build-tools: ${BT%/}"
+          ls "${BT%/}" | head -20
 
       - name: Verify the base pack is present
         run: |
