@@ -24,9 +24,8 @@ if [ -f templates/android_release.apk ]; then
   echo "  already present"
 else
   mkdir -p templates
-  URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
-  echo "  downloading (1.2 GB, only the android template is extracted)..."
-  python3 tools/fetch_template.py "$URL" templates/android_release.apk
+  echo "  not cached; build_apk.py will fetch just the android template (~100 MB)"
+  echo "  via HTTP range requests the first time it runs"
 fi
 
 if [ ! -f assets/game_base.pck ]; then

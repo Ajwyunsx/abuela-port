@@ -218,7 +218,22 @@ def find_tool(name):
     raise SystemExit('could not find %s; set ABUELA_%s' % (name, name.upper()))
 
 
+def ensure_template():
+    """Download the official Godot Android export template when it is missing."""
+    if os.path.exists(TEMPLATE_APK):
+        return TEMPLATE_APK
+    ver = os.environ.get('GODOT_VERSION', '4.7.2')
+    url = ('https://github.com/godotengine/godot/releases/download/%s-stable/'
+           'Godot_v%s-stable_export_templates.tpz' % (ver, ver))
+    print('template missing, fetching %s' % url)
+    subprocess.run([sys.executable, os.path.join(HERE, 'fetch_template.py'), url,
+                    'templates/android_release.apk', TEMPLATE_APK], check=True)
+    return TEMPLATE_APK
+
+
 def main():
+    os.makedirs(WORK, exist_ok=True)
+    ensure_template()
     pck = sys.argv[1] if len(sys.argv) > 1 else os.path.join(OUT_DIR, 'game_touch.pck')
     out_apk = sys.argv[2] if len(sys.argv) > 2 else os.path.join(OUT_DIR, 'ABUELA.apk')
     os.makedirs(WORK, exist_ok=True)
