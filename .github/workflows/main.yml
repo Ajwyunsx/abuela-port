@@ -1,0 +1,139 @@
+name: build-apk
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      upload_release:
+        description: 'Also attach the APK to a GitHub Release (tags only)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: '1'
+  GODOT_VERSION: '4.7.2'
+  ABUELA_KEYSTORE_PASS: 'abuela2026'
+
+jobs:
+  build:
+    name: Build ABUELA.apk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install Pillow
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build-tools
+        run: |
+          sdkmanager --install "build-tools;34.0.0" "platforms;android-34" > /dev/null
+          echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_ENV"
+
+      - name: Verify the base pack is present
+        run: |
+          set -e
+          if [ ! -f assets/game_base.pck ]; then
+            echo "::error::assets/game_base.pck is missing."
+            echo "It is stored with Git LFS - make sure LFS files were pulled."
+            exit 1
+          fi
+          ls -la assets/game_base.pck
+          python - <<'PY'
+          import struct
+          d = open('assets/game_base.pck', 'rb').read(24)
+          magic, ver = struct.unpack('<2I', d[:8])
+          assert magic == 0x43504447, 'not a Godot pack'
+          print('pack format version:', ver)
+          PY
+
+      - name: Build the patched game pack
+        env:
+          ABUELA_BASE: assets/game_base.pck
+        run: python tools/build_game.py
+
+      - name: Build and sign the APK
+        env:
+          ABUELA_APKSIGNER: ${{ env.ANDROID_BUILD_TOOLS }}/apksigner
+        run: python tools/build_apk.py out/game_touch.pck out/ABUELA.apk
+
+      - name: Verify the APK
+        run: |
+          set -e
+          "$ANDROID_BUILD_TOOLS/apksigner" verify --verbose out/ABUELA.apk
+          python - <<'PY'
+          import zipfile, struct, hashlib
+          z = zipfile.ZipFile('out/ABUELA.apk')
+          assert z.testzip() is None, 'corrupt zip'
+          names = set(z.namelist())
+          assert 'assets/assets.sparsepck' in names, 'sparse pck metadata missing'
+          meta = z.read('assets/assets.sparsepck')
+          magic, ver, fmaj, fmin, fpatch, flags = struct.unpack('<6I', meta[:24])
+          assert magic == 0x43504447 and flags & 4, 'bad sparse pack header'
+          _, dir_off = struct.unpack('<2Q', meta[24:40])
+          pos = dir_off
+          count = struct.unpack('<I', meta[pos:pos + 4])[0]; pos += 4
+          for _ in range(count):
+              sl = struct.unpack('<I', meta[pos:pos + 4])[0]; pos += 4
+              path = meta[pos:pos + sl].rstrip(b'\x00').decode(); pos += sl
+              _, size = struct.unpack('<2Q', meta[pos:pos + 16]); pos += 16
+              md5 = meta[pos:pos + 16]; pos += 16
+              pos += 4
+              ape = 'assets/' + path
+              assert ape in names, 'missing asset ' + ape
+              data = z.read(ape)
+              assert len(data) == size and hashlib.md5(data).digest() == md5, 'mismatch ' + ape
+          print('sparse pack ok:', count, 'files')
+          print('overlay present:', b'_toggle_crouch' in z.read('assets/touch/touch_controls.gd'))
+          PY
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ABUELA-apk
+          path: out/ABUELA.apk
+          retention-days: 30
+
+      - name: Upload mapped artifacts (pack + logs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            out/game_touch.pck
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/ABUELA.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true

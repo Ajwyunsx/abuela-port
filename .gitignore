@@ -1,0 +1,36 @@
+# build outputs
+out/
+work/
+
+# downloaded toolchain (large, re-fetched by tools/fetch_tools.sh)
+Godot_v*-stable_linux.*
+godot_editor.zip
+templates.tpz
+apktool.jar
+templates/
+
+# extracted game resources (derived from assets/game_base.pck)
+pck/
+gdc/
+
+# godot upstream sources fetched for reference
+*.cpp
+*.h
+export_plugin.cpp
+export_platform.cpp
+base_button.cpp
+file_access_*.cpp
+file_access_pack.h
+input.cpp
+input_event.h
+packed_data.cpp
+
+# scratch
+probe/
+dummy/
+fetch_zip_member.py
+tools_ecfg.py
+
+__pycache__/
+*.pyc
+*.apk.idsig
