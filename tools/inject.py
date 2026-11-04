@@ -4,8 +4,10 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import pck, ecfg_patch
 
-EXE = os.environ.get('ABUELA_EXE', os.path.join(ROOT, 'ABUELA.exe'))
-PCK_OFF = int(os.environ.get('ABUELA_PCK_OFFSET', '0'), 0) or 0x6831200
+EXE = (os.environ.get('ABUELA_BASE') or os.environ.get('ABUELA_EXE')
+       or os.path.join(ROOT, 'assets', 'game_base.pck'))
+IS_PCK = EXE.lower().endswith('.pck')
+PCK_OFF = 0 if IS_PCK else (int(os.environ.get('ABUELA_PCK_OFFSET', '0'), 0) or 0x6831200)
 
 def _dir_end(f):
     f.seek(PCK_OFF)
@@ -20,10 +22,10 @@ def _dir_end(f):
 
 def build(out_pck, autoloads=(), extra_files=None, project_patch=None, drop_files=()):
     p = pck.Pck.from_exe(EXE, PCK_OFF)
-    exe = open(EXE, 'rb').read()
     with open(EXE, 'rb') as f:
         dir_end = _dir_end(f)
-    p.trailer = exe[dir_end:]          # 16-byte footer of the original pack
+        f.seek(dir_end)
+        p.trailer = f.read()          # footer of the original pack
     entries = ecfg_patch.parse(p.get_file('project.binary'))
     for name, path in autoloads:
         ecfg_patch.set_string(entries, 'autoload/' + name, '*' + path)

@@ -23,6 +23,11 @@ func _ready() -> void:
 	if overlay == null:
 		get_tree().quit()
 		return
+	# menu widgets (music slider / difficulty list) must be tested while the
+	# menu scene is still alive: it is freed once the game starts
+	await get_tree().create_timer(0.5).timeout
+	await _test_menu_widgets()
+
 	var pb := _find_button(get_tree().current_scene, "PlayGame")
 	if pb:
 		pb.pressed.emit()
@@ -104,13 +109,28 @@ func _ready() -> void:
 	print("[TEST] stood up: cam.y %.2f -> %.2f  restored=%s" % [crouch_y, cam2.position.y, str(absf(cam2.position.y - stand_y) < 0.05)])
 
 	# ---------- jump ----------
-	var y_before: float = player.global_position.y
-	await _press_button("jump")
-	await get_tree().create_timer(0.35).timeout
-	var st_jump: String = _state()
-	await get_tree().create_timer(1.5).timeout
-	print("[TEST] jump: state_after_press=%s  left_ground=%s  landed_state=%s"
-			% [st_jump, str(st_jump == "Jump"), _state()])
+	# the test player is idle but Granny may already be chasing; jumping only
+	# works from Idle/Walk, so wait for a usable moment
+	var ok_to_jump := false
+	for _i in 120:
+		await get_tree().create_timer(0.1).timeout
+		var st := _state()
+		if st == "Idle" or st == "Walk" or st == "CrouchWalk":
+			ok_to_jump = true
+			break
+	if not ok_to_jump:
+		print("[TEST] jump skipped: player is in state ", _state())
+	print("[TEST] jump precondition: on_floor=%s state=%s pos=%s"
+			% [str(player.is_on_floor()), _state(), str(player.global_position)])
+	if ok_to_jump:
+		var y_before: float = player.global_position.y
+		await _press_button("jump")
+		await get_tree().create_timer(0.35).timeout
+		var st_jump: String = _state()
+		var peak: float = player.global_position.y
+		await get_tree().create_timer(1.5).timeout
+		print("[TEST] jump: state_after_press=%s  left_ground=%s  landed_state=%s  on_floor=%s"
+				% [st_jump, str(st_jump == "Jump"), _state(), str(player.is_on_floor())])
 
 	# ---------- inventory ----------
 	var slots: Array = overlay.get("_slots")
@@ -134,9 +154,92 @@ func _ready() -> void:
 		await get_tree().process_frame
 		var img := get_viewport().get_texture().get_image()
 		img.save_png("/tmp/abuela_shot.png")
-		print("[TEST] screenshot saved")
+		print("[TEST] screenshot saved, mode=", DisplayServer.window_get_mode(),
+				" fullscreen=", DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN,
+				" size=", DisplayServer.window_get_size())
 	print("[TEST] done")
 	get_tree().quit()
+
+func _test_menu_widgets() -> void:
+	# go back to the menu: the settings screen holds both widgets
+	var settings = _find_node(get_tree().current_scene, "Settings")
+	var menu = _find_node(get_tree().current_scene, "Menu")
+	if settings == null:
+		print("[TEST] widgets: no Settings node")
+		return
+	settings.visible = true
+	if menu:
+		menu.visible = false
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	var music = _find_node(settings, "Music")
+	if music is HSlider:
+		var before: float = music.value
+		var rect: Rect2 = music.get_global_rect()
+		var click := Vector2(rect.position.x + rect.size.x * 0.85, rect.position.y + rect.size.y * 0.5)
+		overlay.call("_handle_point", click, 0, 60)
+		await get_tree().process_frame
+		overlay.call("_release_point", 60, click)
+		print("[TEST] music slider: %.3f -> %.3f  changed=%s"
+				% [before, music.value, str(absf(music.value - before) > 0.05)])
+		# drag along the track
+		var before2: float = music.value
+		var start := Vector2(rect.position.x + rect.size.x * 0.85, rect.position.y + rect.size.y * 0.5)
+		overlay.call("_handle_point", start, 0, 61)
+		var target := Vector2(rect.position.x + rect.size.x * 0.15, rect.position.y + rect.size.y * 0.5)
+		_drag(61, target, target - start)
+		overlay.call("_release_point", 61, target)
+		print("[TEST] music slider drag: %.3f -> %.3f  changed=%s"
+				% [before2, music.value, str(absf(music.value - before2) > 0.05)])
+	else:
+		print("[TEST] widgets: Music is ", music)
+
+	# the difficulty list is collapsed behind a Deploy button; open it first.
+	# (a Button needs a real pointer or a touch on a device, so the test fires
+	# its signal directly - what matters here is that the list becomes usable)
+	var deploy = _find_node(settings, "Deploy")
+	if deploy is Button and deploy.is_visible_in_tree():
+		(deploy as Button).pressed.emit()
+		await get_tree().create_timer(0.4).timeout
+		print("[TEST] difficulty list opened: rect=%s"
+				% str(_find_node(settings, "ItemList").get_global_rect()))
+
+	var list = _find_node(settings, "ItemList")
+	if list is ItemList:
+		var il := list as ItemList
+		var sel_before := il.get_selected_items()
+		var rect2: Rect2 = il.get_global_rect()
+		print("[TEST] difficulty list: %d items, selected=%s, rect=%s"
+				% [il.item_count, str(sel_before), str(rect2)])
+		var item_h := rect2.size.y / maxf(il.item_count, 1)
+		var click2 := Vector2(rect2.position.x + rect2.size.x * 0.5,
+				rect2.position.y + item_h * 2.5)
+		overlay.call("_handle_point", click2, 0, 62)
+		await get_tree().process_frame
+		overlay.call("_release_point", 62, click2)
+		await get_tree().process_frame
+		print("[TEST] difficulty after tap: selected=%s" % str(il.get_selected_items()))
+	else:
+		print("[TEST] widgets: ItemList is ", list)
+
+	settings.visible = false
+	if menu:
+		menu.visible = true
+	await get_tree().process_frame
+
+
+func _find_node(n: Node, target: String) -> Node:
+	if n == null:
+		return null
+	if n.name == target:
+		return n
+	for c in n.get_children():
+		var r = _find_node(c, target)
+		if r != null:
+			return r
+	return null
+
 
 func _drag(index: int, pos: Vector2, rel: Vector2) -> void:
 	var d := InputEventScreenDrag.new()

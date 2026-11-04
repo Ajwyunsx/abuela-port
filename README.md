@@ -34,7 +34,7 @@ exe 里 PCK 的头部结构（`0x683120` 处）：`GDPC | ver=4 | 4.7.2 | flags=
 `slot_1..4`=1~4、`drop_item`=Q。
 
 新增 `touch/touch_controls.gd`，以 autoload 注入（`autoload/TouchControls`）：
-- 左半屏虚拟摇杆（屏幕 42% 左侧任意位置按下即出现，跟手）→ 驱动 `move_*` 动作，推到底自动冲刺 `run`；
+- 左半屏虚拟摇杆（屏幕 42% 左侧任意位置按下才出现，**闲置时完全不可见，不遮挡画面**）→ 驱动 `move_*` 动作，推到底自动冲刺 `run`；
   输入经指数平滑（`JOY_SMOOTH`），帧率无关，移动更顺、不抖
 - **多点触控按手指 index 归属**：左手摇杆 + 右手视角可同时进行，任一根手指抬起只释放它自己，
   不会像之前那样把摇杆一起断开
@@ -45,6 +45,10 @@ exe 里 PCK 的头部结构（`0x683120` 处）：`GDPC | ver=4 | 4.7.2 | flags=
   点哪格就触发 `slot_1..slot_4`（不用额外的 1/2/3/4 按钮），也不会被误判成摇杆/视角
 - 菜单界面：真机触摸由 Godot 原生按钮处理；仅桌面测试用的「模拟触摸」才转成鼠标点击
 - 关闭了 `emulate_mouse_from_touch`，避免触摸被误判为开火；同时放行游戏自身 HUD 按钮
+- **滑条与难度列表**：Godot 的 `Range`/`ItemList` 只接受鼠标事件，触屏下完全无响应，
+  因此由触屏层接管——点/拖滑条按位置换算数值，点列表按行高换算索引（音乐音量、灵敏度、难度都因此可用）
+- **强制全屏**：启动即设为 `WINDOW_MODE_FULLSCREEN`，并每帧检查复位；设置界面的
+  Fullscreen 勾选框被置为勾选且禁用，无法退回窗口
 
 ### 3. Android 打包
 Godot 4.7 的 Android 导出用的是**稀疏 PCK**（每个资源单独放进 `assets/`，外加一份 `assets/assets.sparsepck`
@@ -56,7 +60,9 @@ assets/assets.sparsepck      pack header(flags=REL_FILEBASE|SPARSE_BUNDLE) + 目
 ```
 
 再基于官方 `android_release.apk` 导出模板：
-- 同名替换启动图标（游戏自带的老奶奶头像，512×512 → 各密度 WebP）
+- **全部图标换成游戏角色**：各密度 `mipmap-*`（含 adaptive icon 的前景/背景/单色层）、
+  无密度 `mipmap/`、以及启动画面 `drawable/splash_icon` 与 `splash_branding_image`，
+  共 26 项，均取自游戏自带的 512×512 头像，不再残留 Godot 机器人
 - `resources.arsc` 内等长替换应用名为 `ABUELA v3.0.9 Port`
 - 保留模板原生库与 dex，签名用本机 SDK 的 `apksigner`（v2 + v3 签名）
 
@@ -123,7 +129,8 @@ ABUELA_EXE=/path/to/ABUELA.exe python3 tools/extract_base.py
 
 已验证：
 - 重写的 PCK 能被 Godot 4.7.2 引擎正常加载（Linux 模板实跑，菜单→游戏→玩家生成全流程通过）
-- 触屏层自测全绿：摇杆位移、松手停止、水平/俯仰视角、10 个动作按钮全部生效
+- 触屏层自测全绿：摇杆位移、松手停止、双指同时操作、水平/俯仰视角、6 个动作按钮、
+  蹲下/起身、跳跃、点物品栏、音乐滑条（点击 + 拖动）、难度列表（点选 Nightmare）
 - 菜单触摸链路：Play → PlayGame → 进入游戏
 - APK：zip 完整性、`assets.sparsepck` 460 条目全部通过 size+md5 校验、apksigner v2/v3 签名验证通过、
   图标与名称已替换

@@ -32,7 +32,11 @@ PACK_SPARSE_BUNDLE = 1 << 2
 ALIGN = 4096
 
 STORED_EXT = ('.so', '.png', '.webp', '.jpg', '.jpeg', '.ogg', '.ogv', '.mp3', '.wav', '.ctex', '.m4a', '.ttf')
+ICON_BG = (26, 22, 20, 255)
 ICON_FILES = ('icon.webp', 'icon_foreground.webp', 'icon_background.webp', 'icon_monochrome.webp')
+# the game's own 512x512 artwork, drawn as a rounded tile
+ICON_ROUND = True
+ICON_CORNER = 0.22
 
 
 # ---------------------------------------------------------------- pck
@@ -86,6 +90,20 @@ def sparse_metadata(files):
 
 # ---------------------------------------------------------------- icons
 
+def _rounded(img, radius_frac=0.22):
+    """Apply a rounded-corner mask so the tile looks like a launcher icon."""
+    from PIL import Image, ImageDraw
+    w, h = img.size
+    mask = Image.new('L', (w * 4, h * 4), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, w * 4 - 1, h * 4 - 1), radius=int(w * 4 * radius_frac), fill=255)
+    mask = mask.resize((w, h), Image.LANCZOS)
+    out = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    out.paste(img, (0, 0))
+    out.putalpha(Image.composite(img.getchannel('A'), Image.new('L', (w, h), 0), mask))
+    return out
+
+
 def build_icons(icon_bytes=None):
     from PIL import Image
     import io as _io
@@ -96,20 +114,34 @@ def build_icons(icon_bytes=None):
     out = {}
     sizes = {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}
     for dpi, size in sizes.items():
-        pass
-    for dpi, size in sizes.items():
         icon = src.resize((size, size), Image.LANCZOS)
+        if ICON_ROUND:
+            icon = _rounded(icon)
         out['res/mipmap-%s/icon.webp' % dpi] = _webp(icon)
+        # adaptive icon: transparent layer, the artwork inset into the safe zone
         fg_size = int(size * 1.5)
         fg = Image.new('RGBA', (fg_size, fg_size), (0, 0, 0, 0))
-        inner = src.resize((int(size * 0.8), int(size * 0.8)), Image.LANCZOS)
+        inner = src.resize((int(size * 0.92), int(size * 0.92)), Image.LANCZOS)
         fg.paste(inner, ((fg_size - inner.width) // 2, (fg_size - inner.height) // 2), inner)
         out['res/mipmap-%s/icon_foreground.webp' % dpi] = _webp(fg)
-        bg = Image.new('RGBA', (size, size), (26, 22, 20, 255))
+        # dark warm backdrop sampled from the artwork itself
+        bg = Image.new('RGBA', (size, size), ICON_BG)
         out['res/mipmap-%s/icon_background.webp' % dpi] = _webp(bg)
-        mono = src.convert('L').resize((size, size), Image.LANCZOS).convert('RGBA')
+        # monochrome / themed icon: silhouette of the artwork
+        mono = src.convert('LA').resize((fg_size, fg_size), Image.LANCZOS).convert('RGBA')
         out['res/mipmap-%s/icon_monochrome.webp' % dpi] = _webp(mono)
-    out['res/mipmap/icon.webp'] = _webp(src.resize((192, 192), Image.LANCZOS))
+    # the splash icon and the plain-no-density mipmap are what older devices use
+    out['res/mipmap/icon.webp'] = _webp(_rounded(src.resize((192, 192), Image.LANCZOS)) if ICON_ROUND
+                                        else src.resize((192, 192), Image.LANCZOS))
+    out['res/mipmap/icon_foreground.webp'] = _webp(src.resize((108, 108), Image.LANCZOS))
+    out['res/mipmap/icon_background.webp'] = _webp(Image.new('RGBA', (108, 108), ICON_BG))
+    out['res/mipmap/icon_monochrome.webp'] = _webp(
+        src.convert('LA').resize((108, 108), Image.LANCZOS).convert('RGBA'))
+    # Godot's launch splash still shows its own logo unless we replace these too
+    out['res/drawable/splash_icon.webp'] = _webp(src.resize((432, 432), Image.LANCZOS))
+    out['res/drawable/splash_branding_image.webp'] = _webp(
+        src.resize((100, 100), Image.LANCZOS))
+    out['res/drawable/splash_icon.png'] = _webp(src.resize((432, 432), Image.LANCZOS))
     return out
 
 
@@ -249,7 +281,11 @@ def main():
         data = tpl.read(info.filename)
         base = info.filename.rsplit('/', 1)[-1]
         dens = density_of(info.filename)
-        if base in ICON_FILES and dens:
+        if info.filename in icons:
+            # splash artwork and the density-less mipmap entries
+            data = icons[info.filename]
+            replaced += 1
+        elif base in ICON_FILES and dens:
             key = 'res/mipmap-%s/%s' % (dens, base)
             if key in icons:
                 data = icons[key]

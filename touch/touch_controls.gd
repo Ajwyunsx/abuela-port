@@ -78,6 +78,8 @@ var _pending_clicks: Array[Vector2] = []
 var _buttons: Array[Btn] = []
 var _slots: Array = []            # the game's own inventory slot controls
 var _scale := 1.0
+var _ui_targets := {}            # touch index -> {kind, control}
+var _fs_check: CheckBox = null
 var _crouching := false
 var _crouch_blend := 0.0          # 0 = standing, 1 = fully crouched
 var _cam: Camera3D = null
@@ -98,8 +100,15 @@ func _ready() -> void:
 	add_child(_canvas)
 	_make_buttons()
 	_touch_emulation = bool(ProjectSettings.get_setting("input_devices/pointing/emulate_touch_from_mouse", false))
+	_enforce_fullscreen()
 	set_process(true)
 	print("[TOUCH] overlay ready (touch_emulation=", _touch_emulation, ")")
+
+func _enforce_fullscreen() -> void:
+	# the port always runs fullscreen; the in-game checkbox is neutralised below
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, true)
+
 
 func _make_buttons() -> void:
 	_buttons.clear()
@@ -161,14 +170,18 @@ func _input(event: InputEvent) -> void:
 
 
 func _handle_point(pos: Vector2, device: int = 0, index: int = -1) -> void:
+	if _owners.has(index):
+		return
+	# Sliders and ItemLists only understand mouse input in Godot, so they are
+	# driven from touch directly. This applies in the menus as well.
+	if _handle_ui_widget(pos, index):
+		return
 	if _ui_mode:
 		# Menu / UI screen. On a real device Godot's buttons already react to
 		# native touch events, so nothing has to be done. Only emulated touches
 		# (desktop testing, device id -1) need to be forwarded as mouse clicks.
 		if device == InputEvent.DEVICE_ID_EMULATION:
 			_pending_clicks.append(pos)
-		return
-	if _owners.has(index):
 		return
 	# let the game's own HUD buttons receive the tap first
 	if _over_game_button(pos):
@@ -211,6 +224,63 @@ func _handle_point(pos: Vector2, device: int = 0, index: int = -1) -> void:
 		return
 
 
+# --- touch support for Range (sliders) and ItemList -----------------------
+
+func _widget_at(pos: Vector2) -> Control:
+	var scene := get_tree().current_scene
+	if scene == null:
+		return null
+	return _find_widget(scene, pos)
+
+
+func _find_widget(n: Node, pos: Vector2) -> Control:
+	if n is Control:
+		var c := n as Control
+		if (c is Range or c is ItemList) and c.is_visible_in_tree() \
+				and c.get_global_rect().has_point(pos):
+			return c
+	for child in n.get_children():
+		var r := _find_widget(child, pos)
+		if r != null:
+			return r
+	return null
+
+
+func _handle_ui_widget(pos: Vector2, index: int) -> bool:
+	var w := _widget_at(pos)
+	if w == null:
+		return false
+	if w is ItemList:
+		_select_item_at(w as ItemList, pos)
+		_owners[index] = {"kind": "widget", "control": w}
+	else:
+		_set_range_from_pos(w as Range, pos)
+		_owners[index] = {"kind": "widget", "control": w}
+	_consume()
+	return true
+
+
+func _select_item_at(list: ItemList, pos: Vector2) -> void:
+	# ItemList positions are relative to the control
+	var local := pos - list.get_global_rect().position
+	var idx := list.get_item_at_position(local, true)
+	if idx < 0:
+		return
+	list.select(idx)
+	list.emit_signal("item_selected", idx)
+	print("[TOUCH] item list -> ", idx)
+
+
+func _set_range_from_pos(r: Range, pos: Vector2) -> void:
+	var rect := r.get_global_rect()
+	if rect.size.x <= 0.0:
+		return
+	var t := clampf((pos.x - rect.position.x) / rect.size.x, 0.0, 1.0)
+	r.value = lerpf(r.min_value, r.max_value, t)
+	if r is Slider:
+		(r as Slider).emit_signal("value_changed", r.value)
+
+
 func _press_button(b: Btn, pos: Vector2, index: int) -> void:
 	b.held = true
 	b.index = index
@@ -232,9 +302,18 @@ func _press_button(b: Btn, pos: Vector2, index: int) -> void:
 
 
 func _handle_drag(event: InputEventScreenDrag) -> void:
+	var owner = _owners.get(event.index, null)
+	if owner != null and owner["kind"] == "widget":
+		var w = owner["control"]
+		if w != null and is_instance_valid(w):
+			if w is ItemList:
+				_select_item_at(w as ItemList, event.position)
+			elif w is Range:
+				_set_range_from_pos(w as Range, event.position)
+			_consume()
+		return
 	if _ui_mode:
 		return
-	var owner = _owners.get(event.index, null)
 	if owner == null:
 		return
 	if owner["kind"] == "joy":
@@ -243,6 +322,14 @@ func _handle_drag(event: InputEventScreenDrag) -> void:
 		_consume()
 	elif owner["kind"] == "look":
 		_handle_move(event.relative)
+	elif owner["kind"] == "widget":
+		var w = owner["control"]
+		if w != null and is_instance_valid(w):
+			if w is ItemList:
+				_select_item_at(w as ItemList, event.position)
+			elif w is Range:
+				_set_range_from_pos(w as Range, event.position)
+			_consume()
 
 
 func _release_point(index: int, pos: Vector2 = Vector2(-1, -1)) -> void:
@@ -278,6 +365,8 @@ func _release_point(index: int, pos: Vector2 = Vector2(-1, -1)) -> void:
 				Input.action_release("run")
 		"look":
 			_look_touch = -1
+		"widget":
+			pass
 
 
 func _now() -> float:
@@ -381,10 +470,47 @@ func _process(delta: float) -> void:
 		_inject_click(_pending_clicks.pop_front())
 	_track_player()
 	_layout_buttons()
+	_keep_fullscreen()
 	_apply_joystick(delta)
 	_apply_crouch(delta)
 	_flush_button_releases()
 	_canvas.queue_redraw()
+
+
+func _keep_fullscreen() -> void:
+	# windowed modes are not supported in this port
+	if DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_FULLSCREEN \
+			and DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN:
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	_neutralise_fullscreen_toggle()
+
+
+func _neutralise_fullscreen_toggle() -> void:
+	# the Settings screen has a Fullscreen checkbox; keep it ticked and disabled
+	# so it cannot drag the game back into a window
+	if _fs_check != null and is_instance_valid(_fs_check):
+		if not _fs_check.disabled or not _fs_check.button_pressed:
+			_fs_check.button_pressed = true
+			_fs_check.disabled = true
+		return
+	var scene := get_tree().current_scene
+	if scene == null:
+		return
+	var cb := _find_checkbox(scene)
+	if cb != null:
+		_fs_check = cb
+		cb.button_pressed = true
+		cb.disabled = true
+
+
+func _find_checkbox(n: Node) -> CheckBox:
+	if n is CheckBox:
+		return n as CheckBox
+	for c in n.get_children():
+		var r := _find_checkbox(c)
+		if r != null:
+			return r
+	return null
 
 
 func _apply_joystick(delta: float) -> void:
@@ -531,12 +657,7 @@ func _draw_ui() -> void:
 		c.draw_circle(_joy_origin, jr, Color(1, 1, 1, 0.10))
 		c.draw_arc(_joy_origin, jr, 0, TAU, 48, Color(1, 1, 1, 0.35), 3.0)
 		c.draw_circle(_joy_knob, 30.0 * _scale, Color(1, 1, 1, 0.35))
-	else:
-		var vs := get_viewport().get_visible_rect().size
-		var base := Vector2(120.0 * _scale + jr, vs.y - (110.0 * _scale + jr))
-		c.draw_circle(base, jr, Color(1, 1, 1, 0.06))
-		c.draw_arc(base, jr, 0, TAU, 48, Color(1, 1, 1, 0.20), 3.0)
-		c.draw_circle(base + Vector2(0, -jr * 0.45), 22.0 * _scale, Color(1, 1, 1, 0.25))
+	# while idle nothing is drawn: the joystick appears only under the thumb
 	# buttons
 	var font := ThemeDB.fallback_font
 	for b in _buttons:
